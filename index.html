@@ -219,6 +219,24 @@ input,select{font:inherit;color:inherit}
 .btns{display:flex;gap:8px;flex-wrap:wrap}
 .nota{font-size:13px;color:var(--nevoa)}
 
+/* ---------- sincronização ---------- */
+.pill{display:flex;align-items:center;gap:7px;padding:8px 12px;border-radius:10px;background:#ffffff1a;font-weight:600;font-size:13.5px}
+.pill:hover{background:#ffffff2e}
+.pill i{width:9px;height:9px;border-radius:50%;background:#8CA3B8;flex:none}
+.pill.ok i{background:#2FBF8A}
+.pill.sync i{background:var(--faixa);animation:pisca 1s infinite}
+.pill.off i{background:#F0A020}
+.pill.erro i{background:#F0555F}
+@keyframes pisca{50%{opacity:.25}}
+@media(max-width:460px){.pill span{display:none}.pill{padding:10px}}
+.passos{padding-left:20px;display:grid;gap:7px;font-size:14px}
+.passos code{background:var(--suave);padding:1px 6px;border-radius:5px;font-size:13px}
+.sync-linha{display:flex;align-items:center;gap:9px;font-weight:600}
+.sync-linha i{width:11px;height:11px;border-radius:50%;background:#8CA3B8;flex:none}
+.sync-linha.ok i{background:var(--verde)}.sync-linha.sync i{background:var(--faixa)}
+.sync-linha.off i{background:var(--ambar)}.sync-linha.erro i{background:var(--verm)}
+.aviso-seg{border-left:4px solid var(--ambar);background:var(--suave);padding:9px 12px;border-radius:0 9px 9px 0;font-size:13.5px}
+
 /* ---------- modal e aviso ---------- */
 #modal{position:fixed;inset:0;background:#0009;z-index:90;display:grid;place-items:center;padding:16px}
 .mbox{background:var(--papel);border-radius:16px;padding:18px;width:min(420px,100%);max-height:90vh;overflow:auto}
@@ -254,7 +272,7 @@ input,select{font:inherit;color:inherit}
       <button class="vazio" tabindex="-1" aria-hidden="true"></button>
       <button data-k="0">0</button><button data-k="del" aria-label="Apagar">⌫</button>
     </div>
-    <p class="lock-foot">Seus dados ficam criptografados só neste navegador.</p>
+    <p class="lock-foot">Seus dados ficam criptografados.</p>
   </div>
 </div>
 
@@ -269,6 +287,7 @@ input,select{font:inherit;color:inherit}
         Painel de Bordo
       </div>
       <div class="sp"></div>
+      <button class="btn-topo pill" id="syncPill" data-act="tab" data-tab="ajustes" aria-label="Estado da sincronização"><i></i><span>Sem sincronizar</span></button>
       <button class="btn-topo" data-act="bloquear">Bloquear</button>
     </header>
     <nav class="tabs" aria-label="Seções">
@@ -326,6 +345,8 @@ const VERIF_B64 = 'ni4ubsedrkO8nBrJLoFgw5ecFUqxnbuUJIcK8fDkIKKjbcuAwXq5pBDkrtl9g
 const KDF_ITER  = 150000;
 const CHECK     = 'painel-de-bordo-ok';
 const STORE_KEY = 'painelDeBordo.dados.v1';
+const SYNC_KEY  = 'painelDeBordo.sync.v1';
+const PADROES = ['almoco','comida','moto','lazer','contas','desnec','saude','outros','salario','extra','outras_in'];
 const AUTOLOCK_MS = 5 * 60 * 1000;
 
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -398,9 +419,10 @@ function dividir(total, n) {
 
 /* ================= dados ================= */
 const CORES_EXTRA = ['#E0475B', '#8A5CF0', '#2E9BB8', '#E8912D', '#3AA76D', '#3C6FD9', '#C2569E', '#7A8B99'];
-function dadosPadrao() {
+const dadosPadrao = () => normalizar(_padrao());
+function _padrao() {
   return {
-    v: 1, tx: [], metas: {}, renda: 0,
+    v: 2, tx: [], metas: {}, renda: 0, apagados: {}, cfgTs: 0,
     cats: [
       { id: 'almoco', nome: 'Almoço', emoji: '🍽️', cor: '#E8912D', tipo: 'gasto' },
       { id: 'comida', nome: 'Mercado e lanches', emoji: '🛒', cor: '#3AA76D', tipo: 'gasto' },
@@ -418,34 +440,210 @@ function dadosPadrao() {
 }
 let D = null;                      // dados descriptografados (só em memória)
 const S = { chave: null, falhas: 0, ate: 0, salvando: Promise.resolve(), semArmazenamento: false };
+const SY = { cfg: null, sha: null, pendente: false, ver: 0, status: 'nocfg', msg: '', ultima: null, timer: null, deb: null };
 const U = { tab: 'inicio', mes: mesDe(hoje()), busca: '', filtroCat: '', mesesIni: null };
 const F = { tipo: 'gasto', cat: null, modo: 'avista', parcelas: 2, fatura: 'este', meses: 12, pago: true, pagoManual: false };
 
 const catPor = id => (D.cats.find(c => c.id === id) || { id, nome: '(categoria removida)', emoji: '❔', cor: '#8794A3', tipo: 'gasto' });
 const ehFixo = t => t.modo === 'credito' || t.modo === 'fixo' || t.cat === 'contas';
 
-function salvar() {
+function salvarLocal() {
   S.salvando = S.salvando.then(async () => {
-    try {
-      localStorage.setItem(STORE_KEY, await cifrar(S.chave, JSON.stringify(D)));
-      S.semArmazenamento = false;
-    } catch (e) { S.semArmazenamento = true; toast('Não consegui salvar neste navegador. Exporte um backup.'); }
+    try { localStorage.setItem(STORE_KEY, await cifrar(S.chave, JSON.stringify(D))); S.semArmazenamento = false; }
+    catch (e) { S.semArmazenamento = true; toast('Não consegui salvar neste navegador. Baixe um backup.'); }
   });
   return S.salvando;
+}
+function salvar() {
+  const p = salvarLocal();
+  if (SY.cfg) { SY.ver++; SY.pendente = true; agendarSync(700); setStatus('sync'); }
+  return p;
+}
+function normalizar(x) {
+  x = x || {};
+  x.tx = Array.isArray(x.tx) ? x.tx : [];
+  x.cats = Array.isArray(x.cats) ? x.cats : _padrao().cats;
+  x.metas = x.metas || {}; x.renda = Number(x.renda) || 0;
+  x.apagados = x.apagados || {}; x.cfgTs = Number(x.cfgTs) || 0; x.v = 2;
+  x.tx.forEach(t => { if (typeof t.ts !== 'number') t.ts = 0; });
+  x.cats.forEach(c => { if (typeof c.ts !== 'number') c.ts = 0; });
+  return x;
 }
 async function carregar() {
   let bruto = null;
   try { bruto = localStorage.getItem(STORE_KEY); } catch (e) { S.semArmazenamento = true; }
   if (bruto) {
-    try { D = JSON.parse(await decifrar(S.chave, bruto)); }
+    try { D = normalizar(JSON.parse(await decifrar(S.chave, bruto))); }
     catch (e) {
       try { localStorage.setItem(STORE_KEY + '.corrompido', bruto); } catch (_) {}
       D = dadosPadrao();
       setTimeout(() => toast('Os dados salvos não abriram. Uma cópia foi guardada; restaure um backup se tiver.'), 400);
     }
   } else D = dadosPadrao();
-  D.tx = Array.isArray(D.tx) ? D.tx : []; D.cats = Array.isArray(D.cats) ? D.cats : dadosPadrao().cats;
-  D.metas = D.metas || {}; D.renda = Number(D.renda) || 0;
+}
+
+/* ================= sincronização entre aparelhos =================
+   Os dados vão criptografados para um arquivo num repositório PRIVADO do GitHub, usando um token
+   que fica só neste aparelho (criptografado com a senha). Cada lançamento tem um carimbo de hora,
+   então lançamentos feitos em dois aparelhos ao mesmo tempo são unidos, sem um apagar o outro. */
+const byId = (p, q) => (p.id < q.id ? -1 : p.id > q.id ? 1 : 0);
+function estavel(v) {
+  if (Array.isArray(v)) return v.map(estavel);
+  if (v && typeof v === 'object') return Object.fromEntries(Object.keys(v).sort().map(k => [k, estavel(v[k])]));
+  return v;
+}
+const canon = x => JSON.stringify(estavel({ ...x, tx: [...x.tx].sort(byId), cats: [...x.cats].sort(byId) }));
+function mesclarLista(a, b) {
+  const m = new Map();
+  for (const r of a.concat(b)) { const o = m.get(r.id); if (!o || r.ts > o.ts) m.set(r.id, r); }
+  return [...m.values()];
+}
+function mesclar(a, b) {
+  const ap = { ...a.apagados };
+  for (const [id, ts] of Object.entries(b.apagados)) if (!(ap[id] >= ts)) ap[id] = ts;
+  const lim = Date.now() - 180 * 864e5;
+  Object.keys(ap).forEach(id => { if (ap[id] < lim) delete ap[id]; });
+  const vivo = r => !(ap[r.id] >= r.ts);
+  const cfg = b.cfgTs > a.cfgTs ? b : a;
+  return normalizar({ v: 2, tx: mesclarLista(a.tx, b.tx).filter(vivo), cats: mesclarLista(a.cats, b.cats).filter(vivo),
+    metas: { ...cfg.metas }, renda: cfg.renda, cfgTs: Math.max(a.cfgTs, b.cfgTs), apagados: ap });
+}
+
+const GH = 'https://api.github.com';
+const erroSync = (tipo, http) => Object.assign(new Error(tipo), { tipo, http });
+function gh(caminho, opts = {}) {
+  return fetch(GH + caminho, {
+    cache: 'no-store', ...opts,
+    headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + SY.cfg.token, 'X-GitHub-Api-Version': '2022-11-28', ...(opts.headers || {}) },
+  });
+}
+const arquivo = () => `/repos/${SY.cfg.repo}/contents/${SY.cfg.path}`;
+async function ghLer() {
+  const r = await gh(`${arquivo()}?_=${Date.now()}`);
+  if (r.status === 404) return { sha: null, texto: null };
+  if (r.status === 401 || r.status === 403) throw erroSync('auth', r.status);
+  if (!r.ok) throw erroSync('outro', r.status);
+  const j = await r.json();
+  let texto;
+  if (j.content && j.encoding === 'base64') texto = decodeURIComponent(escape(atob(j.content.replace(/\s/g, ''))));
+  else { const rr = await gh(arquivo(), { headers: { Accept: 'application/vnd.github.raw+json' } }); texto = await rr.text(); }
+  return { sha: j.sha, texto };
+}
+async function ghGravar(texto, sha) {
+  const corpo = { message: 'sincronização ' + new Date().toISOString(), content: btoa(unescape(encodeURIComponent(texto))) };
+  if (sha) corpo.sha = sha;
+  const r = await gh(arquivo(), { method: 'PUT', body: JSON.stringify(corpo), headers: { 'Content-Type': 'application/json' } });
+  if (r.status === 409 || r.status === 422) throw erroSync('conflito', r.status);
+  if (r.status === 401 || r.status === 403) throw erroSync('auth', r.status);
+  if (r.status === 404) throw erroSync('repo', r.status);
+  if (!r.ok) throw erroSync('outro', r.status);
+  return (await r.json()).content.sha;
+}
+
+function aplicarLocal(novo) {
+  if (canon(novo) === canon(D)) return false;
+  D = novo; salvarLocal(); renderChips();
+  if (['inicio', 'lanc', 'meses'].includes(U.tab) && $('modal').hidden) render();
+  return true;
+}
+let _syncP = Promise.resolve();
+function sincronizar(forcar) { _syncP = _syncP.then(() => sincronizarUma(forcar)).catch(() => {}); return _syncP; }
+async function sincronizarUma(forcar) {
+  if (!D || !SY.cfg) return;
+  const v0 = SY.ver;
+  setStatus('sync');
+  try {
+    for (let tent = 0; tent < 4; tent++) {
+      const r = await ghLer();
+      if (!forcar && !SY.pendente && r.sha && r.sha === SY.sha) { setStatus('ok'); return; }
+      if (r.texto) {
+        let remoto;
+        try { remoto = normalizar(JSON.parse(await decifrar(S.chave, JSON.parse(r.texto).dados))); }
+        catch (e) { throw erroSync('dados'); }
+        aplicarLocal(mesclar(D, remoto));
+        if (canon(D) === canon(remoto)) { SY.sha = r.sha; if (SY.ver === v0) SY.pendente = false; SY.ultima = Date.now(); setStatus('ok'); return; }
+      }
+      try {
+        const texto = JSON.stringify({ app: 'painel-de-bordo', v: 2, atualizado: new Date().toISOString(), dados: await cifrar(S.chave, JSON.stringify(D)) });
+        SY.sha = await ghGravar(texto, r.sha);
+        if (SY.ver === v0) SY.pendente = false;
+        SY.ultima = Date.now(); setStatus('ok'); return;
+      } catch (e) { if (e.tipo === 'conflito' && tent < 3) continue; throw e; }
+    }
+  } catch (e) { tratarErroSync(e); }
+}
+function tratarErroSync(e) {
+  const antes = SY.status;
+  if (e.tipo === 'auth') setStatus('erro', 'O GitHub recusou o token (expirou ou não tem permissão). Gere outro e conecte de novo.');
+  else if (e.tipo === 'repo') setStatus('erro', 'Repositório não encontrado ou sem permissão de escrita.');
+  else if (e.tipo === 'dados') setStatus('erro', 'O arquivo de dados no GitHub não abriu com esta senha. Nada foi alterado.');
+  else if (e.tipo === 'outro') setStatus('erro', `O GitHub respondeu com erro ${e.http}. Tente de novo em instantes.`);
+  else setStatus('off', 'Sem conexão. Suas mudanças estão salvas neste aparelho e serão enviadas quando a internet voltar.');
+  if (SY.status === 'erro' && antes !== 'erro') toast(SY.msg);
+}
+function agendarSync(ms) { clearTimeout(SY.deb); SY.deb = setTimeout(() => sincronizar(true), ms); }
+function iniciarSync() {
+  pararSync();
+  if (!SY.cfg) { setStatus('nocfg'); return; }
+  sincronizar(true);
+  SY.timer = setInterval(() => { if (document.visibilityState !== 'hidden') sincronizar(false); }, 45000);
+}
+function pararSync() { clearInterval(SY.timer); clearTimeout(SY.deb); }
+const hhmm = ms => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+function setStatus(s, msg = '') {
+  SY.status = s; SY.msg = msg;
+  const nomes = { nocfg: 'Sem sincronizar', ok: SY.ultima ? `Sincronizado ${hhmm(SY.ultima)}` : 'Sincronizado', sync: 'Sincronizando…', off: 'Sem conexão', erro: 'Erro ao sincronizar' };
+  const cls = s === 'nocfg' ? '' : s;
+  const p = $('syncPill'); if (p) { p.className = 'btn-topo pill ' + cls; p.innerHTML = `<i></i><span>${nomes[s]}</span>`; p.title = msg || nomes[s]; }
+  const l = $('syncLinha'); if (l) { l.className = 'sync-linha ' + cls; $('syncTxt').textContent = nomes[s]; }
+  const m = $('syncMsg'); if (m) m.textContent = msg;
+}
+async function carregarSyncCfg() {
+  SY.cfg = null; SY.sha = null; SY.pendente = false; SY.ultima = null;
+  try { const b = localStorage.getItem(SYNC_KEY); if (b) SY.cfg = JSON.parse(await decifrar(S.chave, b)); } catch (e) { SY.cfg = null; }
+}
+async function conectar(repoBruto, tokenBruto) {
+  const repo = String(repoBruto).trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  const token = String(tokenBruto).trim();
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) { toast('Escreva o repositório assim: usuario/nome-do-repositorio'); return; }
+  if (!token) { toast('Cole o token de acesso.'); return; }
+  const antigo = SY.cfg; SY.cfg = { repo, token, path: 'painel-de-bordo.json' };
+  const falha = m => { SY.cfg = antigo; toast(m); };
+  try {
+    const r = await gh(`/repos/${repo}`);
+    if (r.status === 401) return falha('Token inválido ou expirado.');
+    if (r.status === 404 || r.status === 403) return falha('Não achei esse repositório com esse token. Confira o nome e se o token tem acesso a ele.');
+    if (!r.ok) return falha(`O GitHub respondeu com erro ${r.status}.`);
+    const j = await r.json();
+    if (j.private !== true) return falha('Esse repositório é PÚBLICO: qualquer pessoa veria seus dados. Crie um repositório privado.');
+    if (j.permissions && j.permissions.push === false) return falha('O token só consegue ler. Ele precisa da permissão "Contents: Read and write".');
+  } catch (e) { return falha('Sem conexão com o GitHub. Tente de novo.'); }
+  try { localStorage.setItem(SYNC_KEY, await cifrar(S.chave, JSON.stringify(SY.cfg))); } catch (e) { return falha('Não consegui guardar a conexão neste navegador.'); }
+  SY.sha = null; SY.pendente = true; SY.ver++;
+  toast('Conectado. Sincronizando…'); render(); iniciarSync();
+}
+function desconectar() {
+  pararSync(); SY.cfg = null; SY.sha = null; SY.pendente = false;
+  try { localStorage.removeItem(SYNC_KEY); } catch (e) {}
+  setStatus('nocfg'); render(); toast('Este aparelho foi desconectado. Os dados continuam salvos aqui.');
+}
+function cardSync() {
+  if (SY.cfg) return `<div class="card aj-grid"><h3>Sincronização entre aparelhos</h3>
+    <div class="sync-linha ${SY.status === 'nocfg' ? '' : SY.status}" id="syncLinha"><i></i><span id="syncTxt"></span></div>
+    <p class="nota" id="syncMsg">${esc(SY.msg)}</p>
+    <p class="nota">Repositório: <b>${esc(SY.cfg.repo)}</b>. O que você lança aqui aparece nos outros aparelhos conectados em alguns segundos.</p>
+    <div class="btns"><button class="btn-sec" data-act="syncAgora">Sincronizar agora</button><button class="btn-sec" data-act="syncDesconectar">Desconectar este aparelho</button></div></div>`;
+  return `<div class="card aj-grid"><h3>Sincronização entre aparelhos</h3>
+    <p class="nota">Para ver os mesmos dados no PC, em casa e no celular, os dados vão criptografados para um repositório <b>privado</b> seu no GitHub. Faça uma vez:</p>
+    <ol class="passos">
+      <li>No GitHub, crie um repositório <b>privado</b> (por exemplo <code>contasdasilva-dados</code>) marcando "Add a README file".</li>
+      <li>Em <b>Settings, Developer settings, Personal access tokens, Fine-grained tokens</b>, gere um token: "Only select repositories" escolhendo só o repositório de dados, e em Permissions deixe <b>Contents: Read and write</b>.</li>
+      <li>Cole abaixo o nome do repositório e o token. Repita em cada aparelho, usando o mesmo token.</li>
+    </ol>
+    <div class="aviso-seg">Nunca use um repositório público para os dados. O app recusa repositórios públicos.</div>
+    <input id="syRepo" class="inp" placeholder="seu-usuario/nome-do-repositorio-privado" autocomplete="off" aria-label="Repositório">
+    <input id="syToken" class="inp" type="password" placeholder="Token de acesso (github_pat_...)" autocomplete="off" aria-label="Token">
+    <div class="btns"><button class="btn-sec" data-act="syncConectar">Conectar este aparelho</button></div></div>`;
 }
 
 /* ================= cálculos ================= */
@@ -658,19 +856,19 @@ function viewMetas() {
 
 /* ================= interface: Ajustes ================= */
 function viewAjustes() {
-  const tag = c => `<span class="tagcat" style="border-color:${c.cor}55">${c.emoji} ${esc(c.nome)}${['almoco','comida','moto','lazer','contas','desnec','saude','outros','salario','extra','outras_in'].includes(c.id) ? '' : ` <button data-act="catDel" data-id="${c.id}" aria-label="Remover ${esc(c.nome)}">✕</button>`}</span>`;
-  return `<div class="card aj-grid"><h3>Categorias</h3>
+  const tag = c => `<span class="tagcat" style="border-color:${c.cor}55">${c.emoji} ${esc(c.nome)}${PADROES.includes(c.id) ? '' : ` <button data-act="catDel" data-id="${c.id}" aria-label="Remover ${esc(c.nome)}">✕</button>`}</span>`;
+  return cardSync() + `<div class="card aj-grid"><h3>Categorias</h3>
       <div><b>Gastos</b><div class="cats-mg" style="margin-top:6px">${D.cats.filter(c => c.tipo === 'gasto').map(tag).join('')}</div></div>
       <div><b>Entradas</b><div class="cats-mg" style="margin-top:6px">${D.cats.filter(c => c.tipo === 'entrada').map(tag).join('')}</div></div>
       <div class="linha-form"><select id="ncTipo" class="sel"><option value="gasto">Gasto</option><option value="entrada">Entrada</option></select>
         <input id="ncEmoji" class="inp" maxlength="4" placeholder="🙂" aria-label="Emoji"><input id="ncNome" class="inp" maxlength="30" placeholder="Nome da nova categoria" aria-label="Nome">
         <button class="btn-sec" data-act="catAdd">Adicionar</button></div></div>
     <div class="card aj-grid"><h3>Backup e planilha</h3>
-      <p class="nota">O backup é criptografado com a mesma senha. Guarde o arquivo em local seguro e use-o para levar seus dados para outro navegador ou aparelho.</p>
+      <p class="nota">O backup é criptografado com a mesma senha. Guarde uma cópia em local seguro por precaução. Ao restaurar, os dados atuais são substituídos, e isso também vale para os outros aparelhos conectados.</p>
       <div class="btns"><button class="btn-sec" data-act="expBackup">Baixar backup</button><button class="btn-sec" data-act="impBackup">Restaurar backup</button><button class="btn-sec" data-act="expCsv">Baixar planilha (CSV)</button></div>
       <p class="nota">A planilha CSV não é criptografada. Abra no Excel ou Google Planilhas e apague depois se não precisar.</p></div>
     <div class="card aj-grid"><h3>Segurança</h3>
-      <p class="nota">O painel bloqueia sozinho após 5 minutos parado. Seus dados ficam guardados neste navegador, criptografados.</p>
+      <p class="nota">O painel bloqueia sozinho após 5 minutos parado. Seus dados ficam guardados criptografados neste navegador e, se você conectou, no seu repositório privado.</p>
       <div class="btns"><button class="btn-sec" data-act="bloquear">Bloquear agora</button><button class="btn-perigo" data-act="apagarTudo">Apagar todos os dados</button></div></div>`;
 }
 
@@ -743,7 +941,8 @@ async function salvarLancamento() {
     const n = clamp(F.meses, 2, 60);
     for (let i = 0; i < n; i++) itens.push({ ...base, valor, data: addMeses(data, i), n: i + 1, total: n, modo: 'fixo' });
   } else itens.push({ ...base, valor, data, n: 1, total: 1, modo: 'avista' });
-  itens.forEach((t, i) => { t.id = uid() + i; t.pago = F.pago && (t.data <= hj || itens.length === 1); });
+  const agoraTs = Date.now();
+  itens.forEach((t, i) => { t.id = uid() + i; t.pago = F.pago && (t.data <= hj || itens.length === 1); t.ts = agoraTs; });
   D.tx.push(...itens);
   await salvar();
   const c = catPor(F.cat);
@@ -771,7 +970,9 @@ function pedirExcluir(id) {
 }
 async function excluir(id, modo) {
   const t = D.tx.find(x => x.id === id); if (!t) return;
-  D.tx = D.tx.filter(x => modo === 'todos' ? x.gid !== t.gid : modo === 'prox' ? !(x.gid === t.gid && x.data >= t.data) : x.id !== id);
+  const alvo = D.tx.filter(x => modo === 'todos' ? x.gid === t.gid : modo === 'prox' ? (x.gid === t.gid && x.data >= t.data) : x.id === id);
+  const agora = Date.now(); alvo.forEach(x => { D.apagados[x.id] = agora; });
+  const ids = new Set(alvo.map(x => x.id)); D.tx = D.tx.filter(x => !ids.has(x.id));
   await salvar(); fecharModal(); render(); toast('Excluído.');
 }
 function pedirEditar(id) {
@@ -787,7 +988,7 @@ function pedirEditar(id) {
 async function editarOk(id) {
   const t = D.tx.find(x => x.id === id); if (!t) return;
   const v = parseValor($('eValor').value); if (!(v > 0)) { toast('Valor inválido.'); return; }
-  t.cat = $('eCat').value; t.valor = v; t.desc = $('eDesc').value.trim(); t.data = $('eData').value || t.data;
+  t.cat = $('eCat').value; t.valor = v; t.desc = $('eDesc').value.trim(); t.data = $('eData').value || t.data; t.ts = Date.now();
   await salvar(); fecharModal(); render(); toast('Alterado.');
 }
 function baixar(nome, conteudo, tipo) {
@@ -816,11 +1017,29 @@ async function impBackup(file) {
   } catch (e) { toast('Não consegui abrir esse arquivo. Ele precisa ser um backup deste painel, feito com a mesma senha.'); }
 }
 
+async function restaurar() {
+  const novo = normalizar(window.__novo); window.__novo = null; const agora = Date.now();
+  const ap = { ...D.apagados };
+  D.tx.forEach(t => { ap[t.id] = agora; });
+  D.cats.forEach(c => { if (!PADROES.includes(c.id)) ap[c.id] = agora; });
+  novo.tx.forEach(t => { t.ts = agora; delete ap[t.id]; });
+  novo.cats.forEach(c => { c.ts = agora; delete ap[c.id]; });
+  novo.apagados = ap; novo.cfgTs = agora; D = novo;
+  await salvar(); fecharModal(); renderChips(); render(); toast('Backup restaurado.');
+}
+async function apagarTudo() {
+  const agora = Date.now(), ap = { ...D.apagados };
+  D.tx.forEach(t => { ap[t.id] = agora; });
+  D.cats.forEach(c => { if (!PADROES.includes(c.id)) ap[c.id] = agora; });
+  D = dadosPadrao(); D.apagados = ap; D.cfgTs = agora;
+  await salvar(); fecharModal(); renderChips(); render(); toast('Tudo apagado.');
+}
+
 /* ================= bloqueio ================= */
 let pin = '', ocupado = false;
 const pinRender = () => document.querySelectorAll('#dots i').forEach((d, i) => d.classList.toggle('on', i < pin.length));
 function bloquear() {
-  D = null; S.chave = null; pin = ''; pinRender(); fecharModal(); fecharForm();
+  pararSync(); SY.cfg = null; SY.sha = null; SY.pendente = false; D = null; S.chave = null; pin = ''; pinRender(); fecharModal(); fecharForm();
   $('conteudo').innerHTML = ''; $('app').hidden = true; $('lock').hidden = false; $('lockMsg').textContent = 'Digite sua senha';
 }
 async function tentar() {
@@ -838,11 +1057,11 @@ async function tentar() {
       $('dots').classList.add('erro'); setTimeout(() => $('dots').classList.remove('erro'), 400);
       throw 0;
     }
-    S.falhas = 0; S.chave = chave; await carregar();
+    S.falhas = 0; S.chave = chave; await carregar(); await carregarSyncCfg();
     U.mes = mesDe(hoje()); U.tab = 'inicio';
     $('lock').hidden = true; $('app').hidden = false;
     F.tipo = 'gasto'; F.cat = null; renderChips(); resetForm(); $('segTipo').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.tipo === 'gasto'));
-    render(); armarAutoLock();
+    render(); armarAutoLock(); iniciarSync();
   } catch (e) { /* mensagem já mostrada */ }
   pin = ''; pinRender(); ocupado = false;
 }
@@ -908,7 +1127,7 @@ document.addEventListener('click', async e => {
     case 'fab': abrirForm(); break;
     case 'fecharForm': fecharForm(); break;
     case 'salvar': salvarLancamento(); break;
-    case 'pagar': { const t = D.tx.find(x => x.id === id); if (t) { t.pago = !t.pago; await salvar(); render(); } break; }
+    case 'pagar': { const t = D.tx.find(x => x.id === id); if (t) { t.pago = !t.pago; t.ts = Date.now(); await salvar(); render(); } break; }
     case 'excluir': pedirExcluir(id); break;
     case 'exc': excluir(id, b.dataset.modo); break;
     case 'editar': pedirEditar(id); break;
@@ -917,29 +1136,35 @@ document.addEventListener('click', async e => {
     case 'metasSalvar': {
       const r = parseValor($('rendaEsp').value); D.renda = r > 0 ? r : 0;
       document.querySelectorAll('[data-meta]').forEach(i => { const v = parseValor(i.value); if (v > 0) D.metas[i.dataset.meta] = v; else delete D.metas[i.dataset.meta]; });
-      await salvar(); toast('Metas salvas.'); break;
+      D.cfgTs = Date.now(); await salvar(); toast('Metas salvas.'); break;
     }
     case 'catAdd': {
       const nome = $('ncNome').value.trim(); if (!nome) { toast('Dê um nome para a categoria.'); return; }
       const tipo = $('ncTipo').value, n = D.cats.length;
-      D.cats.push({ id: 'c' + uid(), nome, emoji: $('ncEmoji').value.trim() || '🔹', cor: CORES_EXTRA[n % CORES_EXTRA.length], tipo });
+      D.cats.push({ id: 'c' + uid(), nome, emoji: $('ncEmoji').value.trim() || '🔹', cor: CORES_EXTRA[n % CORES_EXTRA.length], tipo, ts: Date.now() });
       await salvar(); render(); renderChips(); toast('Categoria criada.'); break;
     }
     case 'catDel': {
       if (D.tx.some(t => t.cat === id)) { toast('Essa categoria tem lançamentos. Mude ou exclua eles antes.'); return; }
-      D.cats = D.cats.filter(c => c.id !== id); delete D.metas[id]; await salvar(); render(); renderChips(); break;
+      D.cats = D.cats.filter(c => c.id !== id); delete D.metas[id]; D.apagados[id] = Date.now(); D.cfgTs = Date.now(); await salvar(); render(); renderChips(); break;
     }
     case 'expBackup': expBackup(); break;
     case 'impBackup': $('fileImport').click(); break;
-    case 'impOk': D = window.__novo; window.__novo = null; D.metas = D.metas || {}; D.renda = D.renda || 0; await salvar(); fecharModal(); renderChips(); render(); toast('Backup restaurado.'); break;
+    case 'impOk': await restaurar(); break;
     case 'expCsv': expCsv(); break;
     case 'apagarTudo':
       abrirModal(`<h3>Apagar tudo?</h3><p>Isso remove todos os lançamentos, metas e categorias criadas. Não dá para desfazer. Baixe um backup antes se tiver dúvida.</p>
         <div class="btns"><button class="btn-sec" data-act="modalFechar">Cancelar</button><button class="btn-perigo" data-act="apagarOk">Apagar tudo</button></div>`); break;
-    case 'apagarOk': D = dadosPadrao(); await salvar(); fecharModal(); renderChips(); render(); toast('Tudo apagado.'); break;
+    case 'apagarOk': await apagarTudo(); break;
+    case 'syncConectar': await conectar($('syRepo').value, $('syToken').value); break;
+    case 'syncAgora': toast('Sincronizando…'); sincronizar(true); break;
+    case 'syncDesconectar': desconectar(); break;
     case 'bloquear': bloquear(); break;
   }
 });
+
+document.addEventListener('visibilitychange', () => { if (D && SY.cfg && document.visibilityState === 'visible') sincronizar(false); });
+window.addEventListener('online', () => { if (D && SY.cfg) sincronizar(true); });
 
 pinRender();
 })();
