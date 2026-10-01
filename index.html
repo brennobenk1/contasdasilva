@@ -6,6 +6,7 @@
 <meta name="robots" content="noindex,nofollow">
 <meta name="theme-color" content="#1B2732">
 <title>Painel de Bordo</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -227,6 +228,10 @@ input,select{font:inherit;color:inherit}
 .pill.sync i{background:var(--faixa);animation:pisca 1s infinite}
 .pill.off i{background:#F0A020}
 .pill.erro i{background:#F0555F}
+.pill.reconectar i{background:#F0A020}
+.sync-linha.reconectar i{background:var(--ambar)}
+.alt{border:1px solid var(--linha);border-radius:10px;padding:10px 12px;display:grid;gap:8px}
+.alt summary{cursor:pointer;font-weight:600}
 @keyframes pisca{50%{opacity:.25}}
 @media(max-width:460px){.pill span{display:none}.pill{padding:10px}}
 .passos{padding-left:20px;display:grid;gap:7px;font-size:14px}
@@ -287,7 +292,7 @@ input,select{font:inherit;color:inherit}
         Painel de Bordo
       </div>
       <div class="sp"></div>
-      <button class="btn-topo pill" id="syncPill" data-act="tab" data-tab="ajustes" aria-label="Estado da sincronização"><i></i><span>Sem sincronizar</span></button>
+      <button class="btn-topo pill" id="syncPill" data-act="pill" aria-label="Estado da sincronização"><i></i><span>Sem sincronizar</span></button>
       <button class="btn-topo" data-act="bloquear">Bloquear</button>
     </header>
     <nav class="tabs" aria-label="Seções">
@@ -346,6 +351,10 @@ const KDF_ITER  = 150000;
 const CHECK     = 'painel-de-bordo-ok';
 const STORE_KEY = 'painelDeBordo.dados.v1';
 const SYNC_KEY  = 'painelDeBordo.sync.v1';
+/* ID do cliente do Google (não é segredo). Pode ficar vazio: o app pede para colar em Ajustes. */
+const GOOGLE_CLIENT_ID = '';
+const DRIVE_ESCOPO = 'https://www.googleapis.com/auth/drive.appdata';
+const DRIVE_ARQ = 'painel-de-bordo.json';
 const PADROES = ['almoco','comida','moto','lazer','contas','desnec','saude','outros','salario','extra','outras_in'];
 const AUTOLOCK_MS = 5 * 60 * 1000;
 
@@ -440,7 +449,7 @@ function _padrao() {
 }
 let D = null;                      // dados descriptografados (só em memória)
 const S = { chave: null, falhas: 0, ate: 0, salvando: Promise.resolve(), semArmazenamento: false };
-const SY = { cfg: null, sha: null, pendente: false, ver: 0, status: 'nocfg', msg: '', ultima: null, timer: null, deb: null };
+const SY = { cfg: null, sha: null, pendente: false, ver: 0, status: 'nocfg', msg: '', ultima: null, timer: null, deb: null, token: null, tokenAte: 0, driveId: null };
 const U = { tab: 'inicio', mes: mesDe(hoje()), busca: '', filtroCat: '', mesesIni: null };
 const F = { tipo: 'gasto', cat: null, modo: 'avista', parcelas: 2, fatura: 'este', meses: 12, pago: true, pagoManual: false };
 
@@ -554,7 +563,7 @@ async function sincronizarUma(forcar) {
   setStatus('sync');
   try {
     for (let tent = 0; tent < 4; tent++) {
-      const r = await ghLer();
+      const r = await remotoLer(forcar);
       if (!forcar && !SY.pendente && r.sha && r.sha === SY.sha) { setStatus('ok'); return; }
       if (r.texto) {
         let remoto;
@@ -565,7 +574,7 @@ async function sincronizarUma(forcar) {
       }
       try {
         const texto = JSON.stringify({ app: 'painel-de-bordo', v: 2, atualizado: new Date().toISOString(), dados: await cifrar(S.chave, JSON.stringify(D)) });
-        SY.sha = await ghGravar(texto, r.sha);
+        SY.sha = await remotoGravar(texto, r.sha);
         if (SY.ver === v0) SY.pendente = false;
         SY.ultima = Date.now(); setStatus('ok'); return;
       } catch (e) { if (e.tipo === 'conflito' && tent < 3) continue; throw e; }
@@ -573,11 +582,14 @@ async function sincronizarUma(forcar) {
   } catch (e) { tratarErroSync(e); }
 }
 function tratarErroSync(e) {
-  const antes = SY.status;
-  if (e.tipo === 'auth') setStatus('erro', 'O GitHub recusou o token (expirou ou não tem permissão). Gere outro e conecte de novo.');
+  const antes = SY.status, drive = SY.cfg && SY.cfg.prov === 'drive';
+  if (e.tipo === 'token' || e.tipo === 'popup') setStatus('reconectar', 'Toque em "Conectar ao Google" para continuar sincronizando. Suas mudanças estão salvas neste aparelho.');
+  else if (e.tipo === 'gis') setStatus('off', 'Não consegui carregar o login do Google. Verifique a internet.');
+  else if (e.tipo === 'auth') setStatus('erro', drive ? 'O Google recusou o acesso. Reconecte em Ajustes.' : 'O GitHub recusou o token (expirou ou não tem permissão). Gere outro e conecte de novo.');
+  else if (e.tipo === 'api') setStatus('erro', 'A Google Drive API não está ativada no seu projeto do Google Cloud. Ative em "APIs e serviços, Biblioteca".');
   else if (e.tipo === 'repo') setStatus('erro', 'Repositório não encontrado ou sem permissão de escrita.');
-  else if (e.tipo === 'dados') setStatus('erro', 'O arquivo de dados no GitHub não abriu com esta senha. Nada foi alterado.');
-  else if (e.tipo === 'outro') setStatus('erro', `O GitHub respondeu com erro ${e.http}. Tente de novo em instantes.`);
+  else if (e.tipo === 'dados') setStatus('erro', 'O arquivo de dados guardado na nuvem não abriu com esta senha. Nada foi alterado.');
+  else if (e.tipo === 'outro') setStatus('erro', `O servidor respondeu com erro ${e.http}. Tente de novo em instantes.`);
   else setStatus('off', 'Sem conexão. Suas mudanças estão salvas neste aparelho e serão enviadas quando a internet voltar.');
   if (SY.status === 'erro' && antes !== 'erro') toast(SY.msg);
 }
@@ -585,29 +597,37 @@ function agendarSync(ms) { clearTimeout(SY.deb); SY.deb = setTimeout(() => sincr
 function iniciarSync() {
   pararSync();
   if (!SY.cfg) { setStatus('nocfg'); return; }
-  sincronizar(true);
-  SY.timer = setInterval(() => { if (document.visibilityState !== 'hidden') sincronizar(false); }, 45000);
+  const rodar = () => { SY.timer = setInterval(() => { if (document.visibilityState !== 'hidden') sincronizar(false); }, 45000); };
+  if (SY.cfg.prov === 'drive' && !tokenOk()) {
+    setStatus('sync');
+    pedirToken('').then(() => { sincronizar(true); }).catch(e => tratarErroSync(e)).then(rodar);   // tenta entrar sem pedir nada; se o navegador barrar, o botão do topo reconecta
+    return;
+  }
+  sincronizar(true); rodar();
 }
 function pararSync() { clearInterval(SY.timer); clearTimeout(SY.deb); }
 const hhmm = ms => { const d = new Date(ms); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 function setStatus(s, msg = '') {
   SY.status = s; SY.msg = msg;
-  const nomes = { nocfg: 'Sem sincronizar', ok: SY.ultima ? `Sincronizado ${hhmm(SY.ultima)}` : 'Sincronizado', sync: 'Sincronizando…', off: 'Sem conexão', erro: 'Erro ao sincronizar' };
+  const nomes = { nocfg: 'Sem sincronizar', ok: SY.ultima ? `Sincronizado ${hhmm(SY.ultima)}` : 'Sincronizado', sync: 'Sincronizando…', off: 'Sem conexão', erro: 'Erro ao sincronizar', reconectar: 'Conectar ao Google' };
   const cls = s === 'nocfg' ? '' : s;
   const p = $('syncPill'); if (p) { p.className = 'btn-topo pill ' + cls; p.innerHTML = `<i></i><span>${nomes[s]}</span>`; p.title = msg || nomes[s]; }
   const l = $('syncLinha'); if (l) { l.className = 'sync-linha ' + cls; $('syncTxt').textContent = nomes[s]; }
   const m = $('syncMsg'); if (m) m.textContent = msg;
 }
 async function carregarSyncCfg() {
-  SY.cfg = null; SY.sha = null; SY.pendente = false; SY.ultima = null;
-  try { const b = localStorage.getItem(SYNC_KEY); if (b) SY.cfg = JSON.parse(await decifrar(S.chave, b)); } catch (e) { SY.cfg = null; }
+  SY.cfg = null; SY.sha = null; SY.pendente = false; SY.ultima = null; SY.token = null; SY.tokenAte = 0; SY.driveId = null;
+  try {
+    const b = localStorage.getItem(SYNC_KEY);
+    if (b) { SY.cfg = JSON.parse(await decifrar(S.chave, b)); if (!SY.cfg.prov) SY.cfg.prov = 'github'; SY.driveId = SY.cfg.driveId || null; }
+  } catch (e) { SY.cfg = null; }
 }
 async function conectar(repoBruto, tokenBruto) {
   const repo = String(repoBruto).trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
   const token = String(tokenBruto).trim();
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) { toast('Escreva o repositório assim: usuario/nome-do-repositorio'); return; }
   if (!token) { toast('Cole o token de acesso.'); return; }
-  const antigo = SY.cfg; SY.cfg = { repo, token, path: 'painel-de-bordo.json' };
+  const antigo = SY.cfg; SY.cfg = { prov: 'github', repo, token, path: 'painel-de-bordo.json' };
   const falha = m => { SY.cfg = antigo; toast(m); };
   try {
     const r = await gh(`/repos/${repo}`);
@@ -623,27 +643,134 @@ async function conectar(repoBruto, tokenBruto) {
   toast('Conectado. Sincronizando…'); render(); iniciarSync();
 }
 function desconectar() {
-  pararSync(); SY.cfg = null; SY.sha = null; SY.pendente = false;
+  pararSync(); SY.cfg = null; SY.sha = null; SY.pendente = false; SY.token = null; SY.tokenAte = 0; SY.driveId = null;
   try { localStorage.removeItem(SYNC_KEY); } catch (e) {}
   setStatus('nocfg'); render(); toast('Este aparelho foi desconectado. Os dados continuam salvos aqui.');
 }
+
+/* ----- Google Drive (pasta escondida do app, escopo drive.appdata) ----- */
+const gisPronto = () => !!(window.google && google.accounts && google.accounts.oauth2);
+const tokenOk = () => !!SY.token && Date.now() < SY.tokenAte;
+let _tok = null;
+function pedirToken(prompt) {
+  return new Promise((ok, falha) => {
+    if (!gisPronto()) return falha(erroSync('gis'));
+    if (!_tok || _tok._id !== SY.cfg.clientId) {
+      _tok = google.accounts.oauth2.initTokenClient({ client_id: SY.cfg.clientId, scope: DRIVE_ESCOPO, callback: () => {} });
+      _tok._id = SY.cfg.clientId;
+    }
+    _tok.callback = r => {
+      if (r.error) return falha(erroSync(r.error === 'access_denied' ? 'auth' : 'popup', r.error));
+      SY.token = r.access_token; SY.tokenAte = Date.now() + (Number(r.expires_in) || 3600) * 1000 - 60000; ok(r.access_token);
+    };
+    _tok.error_callback = e => falha(erroSync('popup', e && e.type));
+    const o = { prompt: prompt || '' };
+    if (SY.cfg.email) o.login_hint = SY.cfg.email;
+    _tok.requestAccessToken(o);
+  });
+}
+async function driveFetch(url, opts = {}) {
+  if (!tokenOk()) throw erroSync('token');
+  const r = await fetch(url, { cache: 'no-store', ...opts, headers: { Authorization: 'Bearer ' + SY.token, ...(opts.headers || {}) } });
+  if (r.status === 401) { SY.token = null; throw erroSync('token'); }
+  if (r.status === 403) {
+    let motivo = ''; try { motivo = JSON.stringify(await r.clone().json()); } catch (e) {}
+    throw erroSync(/accessNotConfigured|SERVICE_DISABLED/.test(motivo) ? 'api' : 'auth', 403);
+  }
+  return r;
+}
+async function driveAchar() {
+  const q = encodeURIComponent(`name='${DRIVE_ARQ}' and trashed=false`);
+  const r = await driveFetch(`https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=${q}&orderBy=createdTime&fields=files(id)&pageSize=10`);
+  if (!r.ok) throw erroSync('outro', r.status);
+  const j = await r.json();
+  SY.driveId = j.files && j.files.length ? j.files[0].id : null;
+  return SY.driveId;
+}
+async function driveLer(precisaConteudo) {
+  if (!SY.driveId && !(await driveAchar())) return { sha: null, texto: null };
+  const m = await driveFetch(`https://www.googleapis.com/drive/v3/files/${SY.driveId}?fields=id,version`);
+  if (m.status === 404) { SY.driveId = null; return { sha: null, texto: null }; }
+  if (!m.ok) throw erroSync('outro', m.status);
+  const versao = (await m.json()).version;
+  if (!precisaConteudo && versao === SY.sha) return { sha: versao, texto: null };
+  const c = await driveFetch(`https://www.googleapis.com/drive/v3/files/${SY.driveId}?alt=media`);
+  if (!c.ok) throw erroSync('outro', c.status);
+  return { sha: versao, texto: await c.text() };
+}
+async function driveGravar(texto) {
+  if (!SY.driveId) await driveAchar();                       // evita criar um segundo arquivo se outro aparelho acabou de criar
+  if (SY.driveId) {
+    const r = await driveFetch(`https://www.googleapis.com/upload/drive/v3/files/${SY.driveId}?uploadType=media&fields=id,version`,
+      { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: texto });
+    if (r.status === 404) { SY.driveId = null; throw erroSync('conflito', 404); }
+    if (!r.ok) throw erroSync('outro', r.status);
+    return (await r.json()).version;
+  }
+  const lim = 'painel' + Math.random().toString(36).slice(2);
+  const corpo = `--${lim}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify({ name: DRIVE_ARQ, parents: ['appDataFolder'] })}\r\n--${lim}\r\nContent-Type: application/json\r\n\r\n${texto}\r\n--${lim}--`;
+  const r = await driveFetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,version',
+    { method: 'POST', headers: { 'Content-Type': `multipart/related; boundary=${lim}` }, body: corpo });
+  if (!r.ok) throw erroSync('outro', r.status);
+  const j = await r.json(); SY.driveId = j.id;
+  if (SY.cfg) { SY.cfg.driveId = j.id; try { localStorage.setItem(SYNC_KEY, await cifrar(S.chave, JSON.stringify(SY.cfg))); } catch (e) {} }
+  return j.version;
+}
+const remotoLer = forcar => (SY.cfg.prov === 'drive' ? driveLer(forcar || SY.pendente) : ghLer());
+const remotoGravar = (texto, sha) => (SY.cfg.prov === 'drive' ? driveGravar(texto) : ghGravar(texto, sha));
+
+async function driveConectar(idBruto) {
+  const clientId = String(idBruto || GOOGLE_CLIENT_ID || '').trim();
+  if (!/^[\w-]+\.apps\.googleusercontent\.com$/.test(clientId)) { toast('Cole a "ID do cliente" completa (termina com .apps.googleusercontent.com).'); return; }
+  const antigo = SY.cfg; SY.cfg = { prov: 'drive', clientId };
+  const falha = m => { SY.cfg = antigo; SY.token = null; toast(m); };
+  try {
+    await pedirToken('consent');
+    const r = await driveFetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)');
+    if (r.ok) SY.cfg.email = ((await r.json()).user || {}).emailAddress || '';
+  } catch (e) {
+    if (e.tipo === 'gis') return falha('Não consegui carregar o login do Google. Verifique a internet e recarregue a página.');
+    if (e.tipo === 'api') return falha('Ative a "Google Drive API" no seu projeto do Google Cloud e tente de novo.');
+    if (e.tipo === 'auth') return falha('O Google negou o acesso. Aceite a permissão na janela que abre.');
+    return falha('A janela do Google foi fechada ou bloqueada. Libere pop-ups para este site e tente de novo.');
+  }
+  try { localStorage.setItem(SYNC_KEY, await cifrar(S.chave, JSON.stringify(SY.cfg))); } catch (e) { return falha('Não consegui guardar a conexão neste navegador.'); }
+  SY.sha = null; SY.driveId = null; SY.pendente = true; SY.ver++;
+  toast('Conectado ao Google Drive. Sincronizando…'); render(); iniciarSync();
+}
+async function driveReconectar() {
+  if (!SY.cfg || SY.cfg.prov !== 'drive') return;
+  try { await pedirToken(''); toast('Reconectado.'); sincronizar(true); }
+  catch (e) { toast('Não consegui reconectar. Libere pop-ups para este site e tente de novo.'); }
+}
+
 function cardSync() {
-  if (SY.cfg) return `<div class="card aj-grid"><h3>Sincronização entre aparelhos</h3>
-    <div class="sync-linha ${SY.status === 'nocfg' ? '' : SY.status}" id="syncLinha"><i></i><span id="syncTxt"></span></div>
-    <p class="nota" id="syncMsg">${esc(SY.msg)}</p>
-    <p class="nota">Repositório: <b>${esc(SY.cfg.repo)}</b>. O que você lança aqui aparece nos outros aparelhos conectados em alguns segundos.</p>
-    <div class="btns"><button class="btn-sec" data-act="syncAgora">Sincronizar agora</button><button class="btn-sec" data-act="syncDesconectar">Desconectar este aparelho</button></div></div>`;
+  const conexao = SY.cfg
+    ? `<div class="sync-linha ${SY.status === 'nocfg' ? '' : SY.status}" id="syncLinha"><i></i><span id="syncTxt"></span></div>
+       <p class="nota" id="syncMsg">${esc(SY.msg)}</p>
+       <p class="nota">${SY.cfg.prov === 'drive'
+         ? `Google Drive${SY.cfg.email ? ', conta <b>' + esc(SY.cfg.email) + '</b>' : ''}. Os dados ficam num arquivo criptografado e escondido, que só este app enxerga.`
+         : `GitHub, repositório <b>${esc(SY.cfg.repo)}</b>.`} O que você lança aqui aparece nos outros aparelhos conectados em alguns segundos.</p>
+       <div class="btns"><button class="btn-sec" data-act="syncAgora">Sincronizar agora</button>
+       ${SY.cfg.prov === 'drive' ? '<button class="btn-sec" data-act="driveReconectar">Reconectar ao Google</button>' : ''}
+       <button class="btn-sec" data-act="syncDesconectar">Desconectar este aparelho</button></div>` : '';
+  if (SY.cfg) return `<div class="card aj-grid"><h3>Sincronização entre aparelhos</h3>${conexao}</div>`;
+  const origem = location.origin && location.origin !== 'null' ? location.origin : 'https://SEU-USUARIO.github.io';
   return `<div class="card aj-grid"><h3>Sincronização entre aparelhos</h3>
-    <p class="nota">Para ver os mesmos dados no PC, em casa e no celular, os dados vão criptografados para um repositório <b>privado</b> seu no GitHub. Faça uma vez:</p>
+    <p class="nota">Para ver os mesmos dados em vários computadores, os dados vão criptografados para o seu <b>Google Drive</b>, numa pasta escondida que só este app enxerga. Faça uma vez:</p>
     <ol class="passos">
-      <li>No GitHub, crie um repositório <b>privado</b> (por exemplo <code>contasdasilva-dados</code>) marcando "Add a README file".</li>
-      <li>Em <b>Settings, Developer settings, Personal access tokens, Fine-grained tokens</b>, gere um token: "Only select repositories" escolhendo só o repositório de dados, e em Permissions deixe <b>Contents: Read and write</b>.</li>
-      <li>Cole abaixo o nome do repositório e o token. Repita em cada aparelho, usando o mesmo token.</li>
+      <li>Entre em <b>console.cloud.google.com</b>, crie um projeto e ative a <b>Google Drive API</b> (APIs e serviços, Biblioteca).</li>
+      <li>Em <b>Tela de permissão OAuth</b>: tipo Externo, preencha o nome do app e seu e-mail. Em Escopos, adicione <code>drive.appdata</code>. Em Usuários de teste, adicione o seu e-mail.</li>
+      <li>Em <b>Credenciais, Criar credenciais, ID do cliente OAuth</b>: tipo Aplicativo da Web. Em Origens JavaScript autorizadas, coloque <code>${esc(origem)}</code> (só o endereço, sem barra no final).</li>
+      <li>Cole abaixo a ID do cliente e toque em Conectar. Nos outros aparelhos, repita só este último passo.</li>
     </ol>
-    <div class="aviso-seg">Nunca use um repositório público para os dados. O app recusa repositórios públicos.</div>
-    <input id="syRepo" class="inp" placeholder="seu-usuario/nome-do-repositorio-privado" autocomplete="off" aria-label="Repositório">
-    <input id="syToken" class="inp" type="password" placeholder="Token de acesso (github_pat_...)" autocomplete="off" aria-label="Token">
-    <div class="btns"><button class="btn-sec" data-act="syncConectar">Conectar este aparelho</button></div></div>`;
+    ${GOOGLE_CLIENT_ID ? '' : '<input id="gdId" class="inp" placeholder="123456789-abc....apps.googleusercontent.com" autocomplete="off" aria-label="ID do cliente do Google">'}
+    <div class="btns"><button class="btn-primary" style="width:auto;padding:12px 24px;margin:0" data-act="driveConectar">Conectar com o Google</button></div>
+    <details class="alt"><summary>Prefere usar o GitHub?</summary>
+      <p class="nota">Crie um repositório <b>privado</b> (com README) e um token em Settings, Developer settings, Fine-grained tokens, só para esse repositório, com <b>Contents: Read and write</b>. O app recusa repositórios públicos.</p>
+      <input id="syRepo" class="inp" placeholder="seu-usuario/nome-do-repositorio-privado" autocomplete="off" aria-label="Repositório">
+      <input id="syToken" class="inp" type="password" placeholder="Token de acesso (github_pat_...)" autocomplete="off" aria-label="Token">
+      <div class="btns"><button class="btn-sec" data-act="syncConectar">Conectar com o GitHub</button></div></details></div>`;
 }
 
 /* ================= cálculos ================= */
@@ -868,7 +995,7 @@ function viewAjustes() {
       <div class="btns"><button class="btn-sec" data-act="expBackup">Baixar backup</button><button class="btn-sec" data-act="impBackup">Restaurar backup</button><button class="btn-sec" data-act="expCsv">Baixar planilha (CSV)</button></div>
       <p class="nota">A planilha CSV não é criptografada. Abra no Excel ou Google Planilhas e apague depois se não precisar.</p></div>
     <div class="card aj-grid"><h3>Segurança</h3>
-      <p class="nota">O painel bloqueia sozinho após 5 minutos parado. Seus dados ficam guardados criptografados neste navegador e, se você conectou, no seu repositório privado.</p>
+      <p class="nota">O painel bloqueia sozinho após 5 minutos parado. Seus dados ficam guardados criptografados neste navegador e, se você conectou, também no seu Google Drive ou repositório privado.</p>
       <div class="btns"><button class="btn-sec" data-act="bloquear">Bloquear agora</button><button class="btn-perigo" data-act="apagarTudo">Apagar todos os dados</button></div></div>`;
 }
 
@@ -1039,7 +1166,7 @@ async function apagarTudo() {
 let pin = '', ocupado = false;
 const pinRender = () => document.querySelectorAll('#dots i').forEach((d, i) => d.classList.toggle('on', i < pin.length));
 function bloquear() {
-  pararSync(); SY.cfg = null; SY.sha = null; SY.pendente = false; D = null; S.chave = null; pin = ''; pinRender(); fecharModal(); fecharForm();
+  pararSync(); SY.cfg = null; SY.sha = null; SY.pendente = false; SY.token = null; SY.tokenAte = 0; SY.driveId = null; D = null; S.chave = null; pin = ''; pinRender(); fecharModal(); fecharForm();
   $('conteudo').innerHTML = ''; $('app').hidden = true; $('lock').hidden = false; $('lockMsg').textContent = 'Digite sua senha';
 }
 async function tentar() {
@@ -1158,6 +1285,9 @@ document.addEventListener('click', async e => {
     case 'apagarOk': await apagarTudo(); break;
     case 'syncConectar': await conectar($('syRepo').value, $('syToken').value); break;
     case 'syncAgora': toast('Sincronizando…'); sincronizar(true); break;
+    case 'pill': if (SY.cfg && SY.cfg.prov === 'drive' && SY.status === 'reconectar') await driveReconectar(); else { U.tab = 'ajustes'; render(); window.scrollTo({ top: 0 }); } break;
+    case 'driveConectar': await driveConectar($('gdId') ? $('gdId').value : ''); break;
+    case 'driveReconectar': await driveReconectar(); break;
     case 'syncDesconectar': desconectar(); break;
     case 'bloquear': bloquear(); break;
   }
