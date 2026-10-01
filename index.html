@@ -352,7 +352,7 @@ const CHECK     = 'painel-de-bordo-ok';
 const STORE_KEY = 'painelDeBordo.dados.v1';
 const SYNC_KEY  = 'painelDeBordo.sync.v1';
 /* ID do cliente do Google (não é segredo). Pode ficar vazio: o app pede para colar em Ajustes. */
-const GOOGLE_CLIENT_ID = '';
+const GOOGLE_CLIENT_ID = '530259453269-pgjru0dubq3hvf0ccd8rsvpkdr5buiur.apps.googleusercontent.com';
 const DRIVE_ESCOPO = 'https://www.googleapis.com/auth/drive.appdata';
 const DRIVE_ARQ = 'painel-de-bordo.json';
 const PADROES = ['almoco','comida','moto','lazer','contas','desnec','saude','outros','salario','extra','outras_in'];
@@ -756,16 +756,21 @@ function cardSync() {
        <button class="btn-sec" data-act="syncDesconectar">Desconectar este aparelho</button></div>` : '';
   if (SY.cfg) return `<div class="card aj-grid"><h3>Sincronização entre aparelhos</h3>${conexao}</div>`;
   const origem = location.origin && location.origin !== 'null' ? location.origin : 'https://SEU-USUARIO.github.io';
+  const tem = !!GOOGLE_CLIENT_ID;
+  const passos = `<ol class="passos">
+      <li>Entre em <b>console.cloud.google.com</b>, ative a <b>Google Drive API</b> (APIs e serviços, Biblioteca).</li>
+      <li>Em <b>Google Auth Platform</b>: Audience tipo Externo, adicione seu e-mail em Test users, e em Data Access adicione o escopo <code>https://www.googleapis.com/auth/drive.appdata</code>.</li>
+      <li>Em <b>Clients, Create client</b>: tipo Web application. Em Authorized JavaScript origins coloque <code>${esc(origem)}</code> (sem barra no final).</li>
+      <li>Cole abaixo a ID do cliente (termina com .apps.googleusercontent.com) e toque em Conectar com o Google.</li>
+    </ol>`;
   return `<div class="card aj-grid"><h3>Sincronização entre aparelhos</h3>
-    <p class="nota">Para ver os mesmos dados em vários computadores, os dados vão criptografados para o seu <b>Google Drive</b>, numa pasta escondida que só este app enxerga. Faça uma vez:</p>
-    <ol class="passos">
-      <li>Entre em <b>console.cloud.google.com</b>, crie um projeto e ative a <b>Google Drive API</b> (APIs e serviços, Biblioteca).</li>
-      <li>Em <b>Tela de permissão OAuth</b>: tipo Externo, preencha o nome do app e seu e-mail. Em Escopos, adicione <code>drive.appdata</code>. Em Usuários de teste, adicione o seu e-mail.</li>
-      <li>Em <b>Credenciais, Criar credenciais, ID do cliente OAuth</b>: tipo Aplicativo da Web. Em Origens JavaScript autorizadas, coloque <code>${esc(origem)}</code> (só o endereço, sem barra no final).</li>
-      <li>Cole abaixo a ID do cliente e toque em Conectar. Nos outros aparelhos, repita só este último passo.</li>
-    </ol>
-    ${GOOGLE_CLIENT_ID ? '' : '<input id="gdId" class="inp" placeholder="123456789-abc....apps.googleusercontent.com" autocomplete="off" aria-label="ID do cliente do Google">'}
+    <p class="nota">${tem ? 'Entre com a mesma conta Google em cada PC e os dados aparecem em todos. Ficam num arquivo criptografado e escondido no seu Drive, que só este app enxerga.' : 'Para ver os mesmos dados em vários computadores, os dados vão criptografados para o seu <b>Google Drive</b>, numa pasta escondida que só este app enxerga.'}</p>
     <div class="btns"><button class="btn-primary" style="width:auto;padding:12px 24px;margin:0" data-act="driveConectar">Conectar com o Google</button></div>
+    <details class="alt" ${tem ? '' : 'open'}><summary>${tem ? 'Usar outra ID do cliente ou ver como criar' : 'Como criar a ID do cliente do Google'}</summary>
+      ${tem ? `<p class="nota">ID em uso: <code>${esc(GOOGLE_CLIENT_ID)}</code></p>` : ''}
+      ${passos}
+      <input id="gdId" class="inp" placeholder="${tem ? 'Opcional: colar outra ID do cliente' : '123456789-abc....apps.googleusercontent.com'}" autocomplete="off" aria-label="ID do cliente do Google">
+    </details>
     <details class="alt"><summary>Prefere usar o GitHub?</summary>
       <p class="nota">Crie um repositório <b>privado</b> (com README) e um token em Settings, Developer settings, Fine-grained tokens, só para esse repositório, com <b>Contents: Read and write</b>. O app recusa repositórios públicos.</p>
       <input id="syRepo" class="inp" placeholder="seu-usuario/nome-do-repositorio-privado" autocomplete="off" aria-label="Repositório">
